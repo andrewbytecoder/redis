@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #include "server.h"
@@ -303,7 +304,7 @@ void watchForKey(client *c, robj *key) {
     wk->key = key;
     wk->client = c;
     wk->db = c->db;
-    wk->expired = keyIsExpired(c->db, key);
+    wk->expired = keyIsExpired(c->db, key->ptr, NULL);
     incrRefCount(key);
     listAddNodeTail(c->watched_keys, wk);
     watchedKeyLinkToClients(clients, wk);
@@ -348,14 +349,19 @@ int isWatchedKeyExpired(client *c) {
     while ((ln = listNext(&li))) {
         wk = listNodeValue(ln);
         if (wk->expired) continue; /* was expired when WATCH was called */
-        if (keyIsExpired(wk->db, wk->key)) return 1;
+        if (keyIsExpired(wk->db, wk->key->ptr, NULL)) return 1;
     }
 
     return 0;
 }
 
 /* "Touch" a key, so that if this key is being WATCHed by some client the
- * next EXEC will fail. */
+ * next EXEC will fail.
+ *
+ * Sanitizer suppression: IO threads also read c->flags, but never modify
+ * it or read the CLIENT_DIRTY_CAS bit, main thread just only modifies
+ * this bit, so there is actually no real data race. */
+REDIS_NO_SANITIZE("thread")
 void touchWatchedKey(redisDb *db, robj *key) {
     list *clients;
     listIter li;
@@ -404,6 +410,7 @@ void touchWatchedKey(redisDb *db, robj *key) {
  * replaced_with: for SWAPDB, the WATCH should be invalidated if
  * the key exists in either of them, and skipped only if it
  * doesn't exist in both. */
+REDIS_NO_SANITIZE("thread")
 void touchAllWatchedKeysInDb(redisDb *emptied, redisDb *replaced_with) {
     listIter li;
     listNode *ln;
@@ -411,8 +418,9 @@ void touchAllWatchedKeysInDb(redisDb *emptied, redisDb *replaced_with) {
 
     if (dictSize(emptied->watched_keys) == 0) return;
 
-    dictIterator *di = dictGetSafeIterator(emptied->watched_keys);
-    while((de = dictNext(di)) != NULL) {
+    dictIterator di;
+    dictInitSafeIterator(&di, emptied->watched_keys);
+    while((de = dictNext(&di)) != NULL) {
         robj *key = dictGetKey(de);
         int exists_in_emptied = dbFind(emptied, key->ptr) != NULL;
         if (exists_in_emptied ||
@@ -429,11 +437,11 @@ void touchAllWatchedKeysInDb(redisDb *emptied, redisDb *replaced_with) {
                          * flag. Deleted keys are not flagged as expired. */
                         wk->expired = 0;
                         continue;
-                    } else if (keyIsExpired(replaced_with, key)) {
+                    } else if (keyIsExpired(replaced_with, key->ptr, NULL)) {
                         /* Expired key remains expired. */
                         continue;
                     }
-                } else if (!exists_in_emptied && keyIsExpired(replaced_with, key)) {
+                } else if (!exists_in_emptied && keyIsExpired(replaced_with, key->ptr, NULL)) {
                     /* Non-existing key is replaced with an expired key. */
                     wk->expired = 1;
                     continue;
@@ -446,7 +454,7 @@ void touchAllWatchedKeysInDb(redisDb *emptied, redisDb *replaced_with) {
             }
         }
     }
-    dictReleaseIterator(di);
+    dictResetIterator(&di);
 }
 
 void watchCommand(client *c) {

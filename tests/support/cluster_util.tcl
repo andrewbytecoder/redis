@@ -1,3 +1,17 @@
+#
+# Copyright (c) 2009-Present, Redis Ltd.
+# All rights reserved.
+#
+# Copyright (c) 2024-present, Valkey contributors.
+# All rights reserved.
+#
+# Licensed under your choice of (a) the Redis Source Available License 2.0
+# (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+# GNU Affero General Public License v3 (AGPLv3).
+#
+# Portions of this file are available under BSD3 terms; see REDISCONTRIBUTIONS for more information.
+#
+
 # Cluster helper functions
 
 # Check if cluster configuration is consistent.
@@ -5,8 +19,9 @@ proc cluster_config_consistent {} {
     for {set j 0} {$j < [llength $::servers]} {incr j} {
         if {$j == 0} {
             set base_cfg [R $j cluster slots]
+            set base_secret [R $j debug internal_secret]
         } else {
-            if {[R $j cluster slots] != $base_cfg} {
+            if {[R $j cluster slots] != $base_cfg || [R $j debug internal_secret] != $base_secret} {
                 return 0
             }
         }
@@ -111,7 +126,7 @@ proc start_cluster {masters replicas options code {slot_allocator continuous_slo
 
     # Configure the starting of multiple servers. Set cluster node timeout
     # aggressively since many tests depend on ping/pong messages. 
-    set cluster_options [list overrides [list cluster-enabled yes cluster-ping-interval 100 cluster-node-timeout 3000]]
+    set cluster_options [list overrides [list cluster-enabled yes cluster-ping-interval 100 cluster-node-timeout 3000 cluster-slot-stats-enabled yes]]
     set options [concat $cluster_options $options]
 
     # Cluster mode only supports a single database, so before executing the tests

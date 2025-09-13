@@ -2,8 +2,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __CONFIG_H
@@ -47,6 +48,7 @@
 #define HAVE_PROC_SMAPS 1
 #define HAVE_PROC_SOMAXCONN 1
 #define HAVE_PROC_OOM_SCORE_ADJ 1
+#define HAVE_EVENT_FD 1
 #endif
 
 /* Test for task_info() */
@@ -101,6 +103,25 @@
 #endif
 #endif
 
+/* Test for __builtin_prefetch()
+ * Supported in LLVM since 2.9: https://releases.llvm.org/2.9/docs/ReleaseNotes.html
+ * Supported in GCC since 3.1 but we use 4.8 given it's too old: https://gcc.gnu.org/gcc-3.1/changes.html. */
+#if defined(__clang__) && (__clang_major__ > 2 || (__clang_major__ == 2 && __clang_minor__ >= 9))
+#define HAS_BUILTIN_PREFETCH 1
+#elif defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 8))
+#define HAS_BUILTIN_PREFETCH 1
+#else
+#define HAS_BUILTIN_PREFETCH 0
+#endif
+
+#if HAS_BUILTIN_PREFETCH
+#define redis_prefetch_read(addr) __builtin_prefetch(addr, 0, 3)  /* Read with high locality */
+#define redis_prefetch_write(addr) __builtin_prefetch(addr, 1, 3) /* Write with high locality */
+#else
+#define redis_prefetch_read(addr) ((void)(addr))  /* No-op if unsupported */
+#define redis_prefetch_write(addr) ((void)(addr)) /* No-op if unsupported */
+#endif
+
 /* Define redis_fsync to fdatasync() in Linux and fsync() for all the rest */
 #if defined(__linux__)
 #define redis_fsync(fd) fdatasync(fd)
@@ -145,6 +166,12 @@
 #endif
 #if !defined(REDIS_NO_SANITIZE)
 #define REDIS_NO_SANITIZE(sanitizer)
+#endif
+
+#if defined(__clang__)
+#define REDIS_NO_SANITIZE_MSAN(sanitizer) REDIS_NO_SANITIZE(sanitizer)
+#else
+#define REDIS_NO_SANITIZE_MSAN(sanitizer)
 #endif
 
 /* Define rdb_fsync_range to sync_file_range() on Linux, otherwise we use

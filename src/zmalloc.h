@@ -3,8 +3,9 @@
  * Copyright (c) 2009-Present, Redis Ltd.
  * All rights reserved.
  *
- * Licensed under your choice of the Redis Source Available License 2.0
- * (RSALv2) or the Server Side Public License v1 (SSPLv1).
+ * Licensed under your choice of (a) the Redis Source Available License 2.0
+ * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
+ * GNU Affero General Public License v3 (AGPLv3).
  */
 
 #ifndef __ZMALLOC_H
@@ -75,8 +76,15 @@
 /* We can enable the Redis defrag capabilities only if we are using Jemalloc
  * and the version used is our special version modified for Redis having
  * the ability to return per-allocation fragmentation hints. */
-#if defined(USE_JEMALLOC) && defined(JEMALLOC_FRAG_HINT)
+#if (defined(USE_JEMALLOC) && defined(JEMALLOC_FRAG_HINT)) || defined(DEBUG_DEFRAG_FORCE)
 #define HAVE_DEFRAG
+#endif
+
+/* We can enable allocation with usable size capabilities only if we are using Jemalloc
+ * and the version used is our special version modified for Redis having
+ * the ability to return usable size during allocation or deallocation. */
+#if defined(USE_JEMALLOC) && defined(JEMALLOC_ALLOC_WITH_USIZE)
+#define HAVE_ALLOC_WITH_USIZE
 #endif
 
 /* 'noinline' attribute is intended to prevent the `-Wstringop-overread` warning
@@ -119,7 +127,7 @@ void *zrealloc_with_flags(void *ptr, size_t size, int flags);
 void zfree_with_flags(void *ptr, int flags);
 #endif
 
-#ifdef HAVE_DEFRAG
+#if (defined(USE_JEMALLOC) && defined(HAVE_DEFRAG))
 void zfree_no_tcache(void *ptr);
 __attribute__((malloc)) void *zmalloc_no_tcache(size_t size);
 #endif
