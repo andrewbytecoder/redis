@@ -265,6 +265,7 @@ static struct config {
     char *server_version;
     char *test_hint;
     char *test_hint_file;
+    char *client_name;
     int prefer_ipv4; /* Prefer IPv4 over IPv6 on DNS lookup. */
     int prefer_ipv6; /* Prefer IPv6 over IPv4 on DNS lookup. */
 } config;
@@ -1665,6 +1666,24 @@ static int cliSwitchProto(void) {
     return result;
 }
 
+/* Set the client name if configured. */
+static int cliSetName(void) {
+    if (config.client_name == NULL) return REDIS_OK;
+
+    redisReply *reply = redisCommand(context,"CLIENT SETNAME %s", config.client_name);
+    if (reply == NULL) {
+        fprintf(stderr, "\nI/O error\n");
+        return REDIS_ERR;
+    }
+    int result = REDIS_OK;
+    if (reply->type == REDIS_REPLY_ERROR) {
+        fprintf(stderr,"CLIENT SETNAME failed: %s\n", reply->str);
+        result = REDIS_ERR;
+    }
+    freeReplyObject(reply);
+    return result;
+}
+
 /* Connect to the server. It is possible to pass certain flags to the function:
  *      CC_FORCE: The connection is performed even if there is already
  *                a connected socket.
@@ -1732,6 +1751,8 @@ static int cliConnect(int flags) {
         if (cliSelect() != REDIS_OK)
             return REDIS_ERR;
         if (cliSwitchProto() != REDIS_OK)
+            return REDIS_ERR;
+        if (cliSetName() != REDIS_OK)
             return REDIS_ERR;
     }
 
@@ -2959,6 +2980,8 @@ static int parseOptions(int argc, char **argv) {
             config.test_hint = argv[++i];
         } else if (!strcmp(argv[i],"--test_hint_file") && !lastarg) {
             config.test_hint_file = argv[++i];
+        } else if (!strcmp(argv[i], "--name") && !lastarg) {
+            config.client_name = argv[++i];
 #ifdef USE_OPENSSL
         } else if (!strcmp(argv[i],"--tls")) {
             config.tls = 1;
@@ -3129,6 +3152,7 @@ static void usage(int err) {
 "                     This interval is also used in --scan and --stat per cycle.\n"
 "                     and in --bigkeys, --memkeys, --keystats, and --hotkeys per 100 cycles.\n"
 "  -n <db>            Database number.\n"
+"  --name <name>      Set the client name.\n"
 "  -2                 Start session in RESP2 protocol mode.\n"
 "  -3                 Start session in RESP3 protocol mode.\n"
 "  -x                 Read last argument from STDIN (see example below).\n"
@@ -8189,6 +8213,9 @@ static int clusterManagerCommandBackup(int argc, char **argv) {
     UNUSED(argc);
     int success = 1, port = 0;
     char *ip = NULL;
+    sds json = NULL;
+    sds jsonpath = NULL;
+
     if (!getClusterHostFromCmdArgs(1, argv, &ip, &port)) goto invalid_args;
     clusterManagerNode *refnode = clusterManagerNewNode(ip, port, 0);
     if (!clusterManagerLoadInfoFromNode(refnode)) return 0;
@@ -8196,8 +8223,26 @@ static int clusterManagerCommandBackup(int argc, char **argv) {
     int cluster_errors_count = (no_issues ? 0 :
                                 listLength(cluster_manager.errors));
     config.cluster_manager_command.backup_dir = argv[1];
-    /* TODO: check if backup_dir is a valid directory. */
-    sds json = sdsnew("[\n");
+
+    struct stat st = {0};
+    char *backup_dir = config.cluster_manager_command.backup_dir;
+
+    if (stat(backup_dir, &st) == -1) {
+        if (errno == ENOENT) {
+            clusterManagerLogErr("[ERR] The specified backup directory '%s' does not exist.\n", backup_dir);
+        } else {
+            clusterManagerLogErr("[ERR] Cannot stat backup directory %s: %s\n",
+                                 backup_dir, strerror(errno));
+        }
+        success = 0;
+        goto cleanup;
+    } else if (!S_ISDIR(st.st_mode)) {
+        clusterManagerLogErr("[ERR] The specified backup path '%s' exists but is not a directory.\n", backup_dir);
+        success = 0;
+        goto cleanup;
+    }
+
+    json = sdsnew("[\n");
     int first_node = 0;
     listIter li;
     listNode *ln;
@@ -8217,7 +8262,7 @@ static int clusterManagerCommandBackup(int argc, char **argv) {
         getRDB(node);
     }
     json = sdscat(json, "\n]");
-    sds jsonpath = sdsnew(config.cluster_manager_command.backup_dir);
+    jsonpath = sdsnew(config.cluster_manager_command.backup_dir);
     if (jsonpath[sdslen(jsonpath) - 1] != '/')
         jsonpath = sdscat(jsonpath, "/");
     jsonpath = sdscat(jsonpath, "nodes.json");
@@ -9855,11 +9900,12 @@ static void LRUTestMode(void) {
             }
         }
         /* Print stats. */
+        long long total_gets = hits + misses;
         printf(
             "%lld Gets/sec | Hits: %lld (%.2f%%) | Misses: %lld (%.2f%%)\n",
             hits+misses,
-            hits, (double)hits/(hits+misses)*100,
-            misses, (double)misses/(hits+misses)*100);
+            hits, total_gets > 0 ? (double)hits/total_gets*100 : 0.0,
+            misses, total_gets > 0 ? (double)misses/total_gets*100 : 0.0);
     }
     exit(0);
 }

@@ -11,6 +11,31 @@
  * Licensed under your choice of (a) the Redis Source Available License 2.0
  * (RSALv2); or (b) the Server Side Public License v1 (SSPLv1); or (c) the
  * GNU Affero General Public License v3 (AGPLv3).
+ *
+ * Dict usage of pointer tagging
+ * -----------------------------
+ * In the "normal" case (no_value=0), a dict slot contains only a pointer to a 
+ * dictEntry, and dictEntry holds untagged pointers to key and value. But when a 
+ * dict is used as a set (no_value=1), we optimize by storing direct key pointers 
+ * when possible, avoiding dictEntry allocation. This happens when A bucket contains 
+ * only one key, or at the tail of a collision chain. Redis dicts uses pointer 
+ * tagging, to identify direct key pointers from dictEntry pointers, i.e embedding 
+ * metadata in the lowest three bits of pointers. This requires 8-byte alignment, 
+ * which zmalloc() guarantees on both 32-bit and 64-bit systems (via jemalloc/tcmalloc, 
+ * or standard malloc with explicit PREFIX_SIZE=8).
+ * 
+ * Besides of distinguishing direct key pointers from dictEntry pointers, we also 
+ * need to distinguish between even and odd key pointers that being stored in the 
+ * dict. Therefore, we use the following tagging scheme:
+ * - dictEntry pointer: Points to a dictEntry structure (8-byte aligned). Left intact: 
+ *   ENTRY_PTR_NORMAL=000
+ * - Odd-address key (keys_are_odd=1): Direct pointer to a 
+ *   key with odd address (e.g., all SDS strings), Left intact: 
+ *   ENTRY_PTR_IS_ODD_KEY=XX1
+ * - Even-address key  (keys_are_odd=0): Direct pointer to a key with 
+ *   even address. Since 8-byte alignment yields bits = 000, same as dictEntry, 
+ *   we tag it by setting bit 1 which results with: 
+ *   ENTRY_PTR_IS_EVEN_KEY=010.
  */
 
 #ifndef __DICT_H
@@ -127,12 +152,14 @@ struct dict {
 
     long rehashidx; /* rehashing not in progress if rehashidx == -1 */
 
-    /* Keep small vars at end for optimal (minimal) struct padding */
-    unsigned pauserehash : 15; /* If >0 rehashing is paused */
+    /* Note: pauserehash is a full unsigned so iterator increments
+     * don't perform RMW on the same storage unit as other bitfields. */
+    unsigned pauserehash; /* If >0 rehashing is paused */
 
-    unsigned useStoredKeyApi : 1; /* See comment of storedHashFunction above */
+    /* Keep small vars at end for optimal (minimal) struct padding */
     signed char ht_size_exp[2]; /* exponent of size. (size = 1<<exp) */
-    int16_t pauseAutoResize;  /* If >0 automatic resizing is disallowed (<0 indicates coding error) */
+    signed pauseAutoResize: 15;  /* If >0 automatic resizing is disallowed (<0 indicates coding error) */
+    unsigned useStoredKeyApi: 1; /* See comment of storedHashFunction above */
     void *metadata[];
 };
 
